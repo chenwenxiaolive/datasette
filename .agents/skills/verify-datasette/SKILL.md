@@ -10,9 +10,9 @@ needs a GPU, a model or another service, so a CPU-only verifier can make every
 run.
 
 Run the commands from the node checkout, in one bash shell: a new shell has
-lost `RUN`, `PORT` and `get`, so over ssh they go in one script. They are
-written for `sh-gate`, a shared machine, which is why the server takes a free
-port.
+lost `RUN`, `PORT` and the helper functions, so over ssh they go in one script,
+`ssh sh-gate 'cd -- <checkout> && bash -s' < <script>`. They are written for
+`sh-gate`, a shared machine, which is why the server takes a free port.
 
 ## Environment
 
@@ -23,8 +23,8 @@ uv sync
 ```
 
 It builds `.venv` with Datasette installed from the checkout in editable mode.
-There is no lock file (`uv.lock` is ignored), so the dependencies are whatever
-is current that day.
+The repository has no lock file: the first sync in a checkout writes a `uv.lock`
+that Git ignores, so a checkout keeps the versions of the day it was built.
 
 ## Launch
 
@@ -62,8 +62,9 @@ get table.html /fixtures/facetable
 get facet.json '/fixtures/facetable.json?_facet=state&_size=2'
 get sql.json '/fixtures/-/query.json?sql=select+41+%2B+1+as+answer'
 get table.csv '/fixtures/facetable.csv?_size=2'
-TOKEN=$(.venv/bin/datasette create-token editor)
-curl -sS --noproxy '*' -o $RUN/create.json -w 'create.json http %{http_code}\n' -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"table": "verify_run", "rows": [{"id": 1, "name": "written by the verify run"}], "pk": "id"}' http://127.0.0.1:$PORT/fixtures/-/create | tee -a $RUN/status.txt
+create() { curl -sS --noproxy '*' -o $RUN/$1 -w "$1 http %{http_code}\n" -X POST "${@:2}" -H 'Content-Type: application/json' -d '{"table": "verify_run", "rows": [{"id": 1, "name": "written by the verify run"}], "pk": "id"}' http://127.0.0.1:$PORT/fixtures/-/create | tee -a $RUN/status.txt; }
+create denied.json
+create create.json -H "Authorization: Bearer $(.venv/bin/datasette create-token editor)"
 get stored.json '/fixtures/verify_run.json?_shape=array'
 ```
 
@@ -73,7 +74,7 @@ get stored.json '/fixtures/verify_run.json?_shape=array'
 | JSON API with a facet and paging | `facet.json http 200` | `jq -c '[.ok, .next, [.rows[].pk], [.facet_results.results.state.results[].count]]' $RUN/facet.json` prints `[true,"2",[1,2],[10,4,1]]`: two rows, a next page, and the facet's counts for CA, MI and MC |
 | SQL query | `sql.json http 200` | `$RUN/sql.json` is `{"ok": true, "rows": [{"answer": 42}], "truncated": false}` |
 | CSV export | `table.csv http 200` | `$RUN/table.csv` has three lines: a header beginning `pk,created,planet_int`, then rows 1 and 2 |
-| Write API | `create.json http 201`, then `stored.json http 200` | `$RUN/stored.json` is `[{"id": 1, "name": "written by the verify run"}]`: the row was stored and read back. The same request without the `Authorization` header answers 403 |
+| Write API | `denied.json http 403` without a token, `create.json http 201` with one, then `stored.json http 200` | `$RUN/stored.json` is `[{"id": 1, "name": "written by the verify run"}]`: the row was stored and read back |
 
 One request needs no server: `.venv/bin/datasette $RUN/fixtures.db --get '/fixtures/-/query.json?sql=select+41+%2B+1+as+answer'`
 prints the SQL feature's JSON and exits 0.
@@ -86,7 +87,7 @@ ended `3072 passed, 188 skipped, 6 xfailed, 15 xpassed` at be0ce3e8 (2026-11-14)
 ## Evidence
 
 `$RUN` holds `commit.txt`, `versions.txt`, `fixtures.db`, `serve.out`,
-`serve.pid`, `status.txt` and one file per feature. Keep the directory and name
+`serve.pid`, `status.txt` and the output file of each request. Keep the directory and name
 it where the result is reported.
 
 ## Cleanup
