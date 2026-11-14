@@ -471,10 +471,10 @@ class Filters:
                 sql_bit, param = filter.where_clause(table, column, value, i)
                 if lookup == "exact" and column in untyped_columns:
                     # No affinity turns the text parameter into a number here: https://www.sqlite.org/datatype3.html#column_affinity_for_views_and_subqueries
-                    c = _quote_sqlite_identifier(column)
+                    c, p = _quote_sqlite_identifier(column), f":p{i}"
+                    is_number = f"cast({p} as numeric) = {p}"
                     sql_bit = (
-                        f"({sql_bit} or (typeof({c}) in ('integer', 'real')"
-                        f" and cast({c} as numeric) = :p{i}))"
+                        f"({sql_bit} or ({c} = +cast({p} as numeric) and {is_number}))"
                     )
                 sql_bits.append(sql_bit)
                 if param is not None:
