@@ -86,6 +86,8 @@ def test_redirect2(custom_pages_client):
         ("/route_Sally", "<p>Hello from Sally</p>"),
         ("/topic_python", "Topic page for python"),
         ("/topic_python/info", "Slug: info, Topic: python"),
+        ("/topic_a~20b", "Topic page for a b"),
+        ("/topic_a~20b/x~2Fy", "Slug: x/y, Topic: a b"),
     ],
 )
 def test_custom_route_pattern(custom_pages_client, path, expected):
