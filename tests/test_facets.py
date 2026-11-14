@@ -975,3 +975,44 @@ async def test_facet_only_considers_first_x_rows():
         assert data2["suggested_facets"] == []
     finally:
         Facet.suggest_consider = original_suggest_consider
+
+
+@pytest.mark.asyncio
+async def test_facet_toggle_on_view_expression_column_shows_its_rows():
+    ds = Datasette()
+    db = ds.add_memory_database("view_expression_columns")
+    await db.execute_write_script("""
+        create table items (
+            id integer primary key, n integer, r real, code text, j text
+        );
+        insert into items (n, r, code, j) values
+            (1, 1.5, '01', '{"b": true}'),
+            (1, 2.0, '1', '{"b": true}'),
+            (2, 2.0, '1.0', '{"b": false}'),
+            (2, 2.5, 'x', '{"b": false}'),
+            (3, 1.5, 'x', '{"b": true}');
+        create view items_view as select
+            id,
+            json_extract(j, '$.b') as b,
+            n + 0 as n_expr,
+            r * 1 as r_expr,
+            '' || code as code_expr
+        from items;
+        """)
+    path = "/view_expression_columns/items_view"
+    for column in ("b", "n_expr", "r_expr", "code_expr"):
+        facets = (
+            await ds.client.get(f"{path}.json?_facet={column}&_extra=facet_results")
+        ).json()["facet_results"]["results"][column]["results"]
+        assert len(facets) > 1
+        for facet in facets:
+            query = urlsplit(facet["toggle_url"]).query
+            toggled = (await ds.client.get(f"{path}.json?{query}")).json()
+            assert len(toggled["rows"]) == facet["count"], query
+            assert {row[column] for row in toggled["rows"]} == {facet["value"]}
+            assert [
+                f["selected"]
+                for f in toggled["facet_results"]["results"][column]["results"]
+            ] == [True]
+    count = await ds.client.post(f"{path}/-/count?b=1")
+    assert count.json() == {"ok": True, "count": 3}
