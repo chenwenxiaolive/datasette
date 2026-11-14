@@ -389,7 +389,7 @@ For example, to capture any request to a URL matching ``/about/*``, you would cr
 
 A hit to ``/about/news`` would render that template and pass in a variable called ``slug`` with a value of ``"news"``.
 
-The variable is decoded using :ref:`tilde encoding <internals_tilde_encoding>`, so a hit to ``/about/breaking~20news`` passes in ``"breaking news"``. Datasette redirects ``/about/breaking%20news`` to that URL.
+The variable is decoded using :ref:`tilde encoding <internals_tilde_encoding>`, so a hit to ``/about/breaking~20news`` passes in ``"breaking news"``. Datasette redirects ``/about/breaking%20news`` to that URL. A ``+`` in the URL is decoded to a space, and a literal ``+`` or ``~`` in the value has to be written as ``~2B`` or ``~7E``.
 
 If you use this mechanism don't forget to return a 404 if the referenced content could not be found. You can do this using ``{{ raise_404() }}`` described below.
 
