@@ -2338,15 +2338,7 @@ async def _table_filters(datasette, request, database_name, table_name, is_view)
 
     # Build where clauses from query string arguments
     filters = Filters(sorted(filter_args))
-    untyped_columns = set()
-    if is_view:
-        db = datasette.get_database(database_name)
-        untyped_columns = {
-            column.name
-            for column in await db.table_column_details(table_name)
-            if not column.type
-        }
-    where_clauses, params = filters.build_where_clauses(table_name, untyped_columns)
+    where_clauses, params = filters.build_where_clauses(table_name, is_view)
 
     # Execute filters_from_request plugin hooks - including the default
     # ones that live in datasette/filters.py
