@@ -3415,7 +3415,12 @@ class DatasetteRouter:
                 for regex, wildcard_template in page_routes:
                     match = regex.match(route_path)
                     if match is not None:
-                        context.update(match.groupdict())
+                        context.update(
+                            {
+                                name: tilde_decode(value)
+                                for name, value in match.groupdict().items()
+                            }
+                        )
                         template = wildcard_template
                         break
 

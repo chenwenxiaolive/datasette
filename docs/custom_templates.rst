@@ -389,6 +389,8 @@ For example, to capture any request to a URL matching ``/about/*``, you would cr
 
 A hit to ``/about/news`` would render that template and pass in a variable called ``slug`` with a value of ``"news"``.
 
+The variable is decoded using :ref:`tilde encoding <internals_tilde_encoding>`, so a hit to ``/about/breaking~20news`` passes in ``"breaking news"``. Datasette redirects ``/about/breaking%20news`` to that URL.
+
 If you use this mechanism don't forget to return a 404 if the referenced content could not be found. You can do this using ``{{ raise_404() }}`` described below.
 
 Templates defined using custom page routes work particularly well with the ``sql()`` template function from `datasette-template-sql <https://github.com/simonw/datasette-template-sql>`__ or the ``graphql()`` template function from `datasette-graphql <https://github.com/simonw/datasette-graphql#the-graphql-template-function>`__.
