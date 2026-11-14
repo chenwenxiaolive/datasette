@@ -6,6 +6,7 @@ import pathlib
 import shutil
 import sys
 import textwrap
+import threading
 import webbrowser
 from runpy import run_module
 from subprocess import call
@@ -730,19 +731,36 @@ def serve(
             raise click.ClickException(e.args[0])
 
         # Start the server
-        url = None
         if root:
             ds.root_enabled = True
-            url = "http://{}:{}{}?token={}".format(
-                host, port, ds.urls.path("-/auth-token"), ds._root_token
-            )
-            click.echo(url)
-        if open_browser:
-            if url is None:
-                # Figure out most convenient URL - to table, database or homepage
-                path = await initial_path_for_datasette(ds)
-                url = f"http://{host}:{port}{path}"
-            webbrowser.open(url)
+
+        def open_browser_in_background(url):
+            # webbrowser.open waits for a console browser, which needs the event loop to serve it
+            threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+
+        async def announce(listening_port, open_url):
+            url = None
+            if root:
+                url = "http://{}:{}{}?token={}".format(
+                    host, listening_port, ds.urls.path("-/auth-token"), ds._root_token
+                )
+                click.echo(url)
+            if open_browser:
+                if url is None:
+                    # Figure out most convenient URL - to table, database or homepage
+                    path = await initial_path_for_datasette(ds)
+                    url = f"http://{host}:{listening_port}{path}"
+                open_url(url)
+
+        class ServerAnnouncingItsPort(uvicorn.Server):
+            async def startup(self, sockets=None):
+                await super().startup(sockets=sockets)
+                if self.started:
+                    await announce(
+                        self.servers[0].sockets[0].getsockname()[1],
+                        open_browser_in_background,
+                    )
+
         uvicorn_kwargs = {
             "host": host,
             "port": port,
@@ -756,8 +774,14 @@ def serve(
             uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
         if ssl_certfile:
             uvicorn_kwargs["ssl_certfile"] = ssl_certfile
-        server = uvicorn.Server(uvicorn.Config(ds.app(), **uvicorn_kwargs))
-        await server.serve()
+        announce_once_listening = port == 0 and not uds
+        if not announce_once_listening:
+            await announce(port, webbrowser.open)
+        config = uvicorn.Config(ds.app(), **uvicorn_kwargs)
+        if announce_once_listening:
+            await ServerAnnouncingItsPort(config).serve()
+        else:
+            await uvicorn.Server(config).serve()
 
     asyncio.run(_serve_async())
 
