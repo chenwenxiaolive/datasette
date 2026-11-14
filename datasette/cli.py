@@ -730,6 +730,29 @@ def serve(
             raise click.ClickException(e.args[0])
 
         # Start the server
+        if root:
+            ds.root_enabled = True
+
+        async def announce(listening_port):
+            url = None
+            if root:
+                url = "http://{}:{}{}?token={}".format(
+                    host, listening_port, ds.urls.path("-/auth-token"), ds._root_token
+                )
+                click.echo(url)
+            if open_browser:
+                if url is None:
+                    # Figure out most convenient URL - to table, database or homepage
+                    path = await initial_path_for_datasette(ds)
+                    url = f"http://{host}:{listening_port}{path}"
+                webbrowser.open(url)
+
+        class ServerAnnouncingItsPort(uvicorn.Server):
+            async def startup(self, sockets=None):
+                await super().startup(sockets=sockets)
+                if self.started:
+                    await announce(self.servers[0].sockets[0].getsockname()[1])
+
         uvicorn_kwargs = {
             "host": host,
             "port": port,
@@ -744,27 +767,11 @@ def serve(
         if ssl_certfile:
             uvicorn_kwargs["ssl_certfile"] = ssl_certfile
         config = uvicorn.Config(ds.app(), **uvicorn_kwargs)
-        sockets = None
-        listening_port = port
         if port == 0 and not uds:
-            sock = config.bind_socket()
-            sock.listen(config.backlog)
-            sockets = [sock]
-            listening_port = sock.getsockname()[1]
-        url = None
-        if root:
-            ds.root_enabled = True
-            url = "http://{}:{}{}?token={}".format(
-                host, listening_port, ds.urls.path("-/auth-token"), ds._root_token
-            )
-            click.echo(url)
-        if open_browser:
-            if url is None:
-                # Figure out most convenient URL - to table, database or homepage
-                path = await initial_path_for_datasette(ds)
-                url = f"http://{host}:{listening_port}{path}"
-            webbrowser.open(url)
-        await uvicorn.Server(config).serve(sockets=sockets)
+            await ServerAnnouncingItsPort(config).serve()
+        else:
+            await announce(port)
+            await uvicorn.Server(config).serve()
 
     asyncio.run(_serve_async())
 
