@@ -1,10 +1,14 @@
 import signal
 import socket
 import subprocess
+import sys
+import tempfile
 import time
 
 import httpx2
 import pytest
+
+from .conftest import stop_process
 
 
 @pytest.mark.serial
@@ -32,6 +36,25 @@ def test_serve_unix_domain_socket(ds_unix_domain_socket_server):
         "path": "/_memory",
         "tables": [],
     }.items() <= response.json().items()
+
+
+@pytest.mark.serial
+def test_serve_port_0_root_url_signs_in():
+    ds_proc = subprocess.Popen(
+        [sys.executable, "-m", "datasette", "--memory", "-p", "0", "--root"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=tempfile.gettempdir(),
+    )
+    try:
+        for line in ds_proc.stdout:
+            if b"/-/auth-token?token=" in line:
+                break
+        response = httpx2.get(line.decode("utf-8").strip())
+    finally:
+        stop_process(ds_proc)
+    assert response.status_code == 302
+    assert "ds_actor" in response.cookies
 
 
 # Shaped after datasette-litestream's startup hook, which schedules a
