@@ -1,3 +1,6 @@
+import contextlib
+import os
+import re
 import signal
 import socket
 import subprocess
@@ -38,10 +41,65 @@ def test_serve_unix_domain_socket(ds_unix_domain_socket_server):
     }.items() <= response.json().items()
 
 
-@pytest.mark.serial
-def test_serve_port_0_root_url_signs_in():
+def _can_bind_ipv6_loopback():
+    if not socket.has_ipv6:
+        return False
+    try:
+        with socket.socket(socket.AF_INET6) as sock:
+            sock.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+def _resolves_to_ipv6_only(hostname):
+    try:
+        families = {info[0] for info in socket.getaddrinfo(hostname, 0)}
+    except socket.gaierror:
+        return False
+    return families == {socket.AF_INET6}
+
+
+ipv6_loopback = pytest.mark.skipif(
+    not _can_bind_ipv6_loopback(), reason="Requires an IPv6 loopback address"
+)
+ipv6_only_hostname = pytest.mark.skipif(
+    not (_can_bind_ipv6_loopback() and _resolves_to_ipv6_only("ip6-localhost")),
+    reason="Requires ip6-localhost to resolve to IPv6 only",
+)
+shell_script_browser = pytest.mark.skipif(
+    sys.platform == "win32", reason="Uses a shell script as the browser"
+)
+
+
+@contextlib.contextmanager
+def serve_on_port_0(*args, env=None):
     ds_proc = subprocess.Popen(
-        [sys.executable, "-m", "datasette", "--memory", "-p", "0", "--root"],
+        [sys.executable, "-m", "datasette", "--memory", "-p", "0", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=tempfile.gettempdir(),
+        env=env,
+    )
+    try:
+        for line in ds_proc.stdout:
+            match = re.search(rb"Uvicorn running on \S+:(\d+) ", line)
+            if match:
+                break
+        yield ds_proc, int(match.group(1))
+    finally:
+        stop_process(ds_proc)
+
+
+@pytest.mark.serial
+@pytest.mark.parametrize(
+    "host_args",
+    [[], pytest.param(["-h", "ip6-localhost"], marks=ipv6_only_hostname)],
+)
+def test_serve_port_0_root_url_signs_in(host_args):
+    ds_proc = subprocess.Popen(
+        [sys.executable, "-m", "datasette", "--memory", "-p", "0", "--root"]
+        + host_args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=tempfile.gettempdir(),
@@ -55,6 +113,69 @@ def test_serve_port_0_root_url_signs_in():
         stop_process(ds_proc)
     assert response.status_code == 302
     assert "ds_actor" in response.cookies
+
+
+@pytest.mark.serial
+@ipv6_loopback
+def test_serve_port_0_ipv6_wildcard_refuses_ipv4():
+    with serve_on_port_0("-h", "::") as (_, port):
+        response = httpx2.get(f"http://[::1]:{port}/-/versions.json")
+        assert response.status_code == 200
+        with pytest.raises(httpx2.ConnectError):
+            httpx2.get(f"http://127.0.0.1:{port}/-/versions.json")
+
+
+# webbrowser waits for a program named by BROWSER, as it does for a console browser
+WAITING_BROWSER = """#!/bin/sh
+echo "$1" > "{opened}"
+while [ ! -e "{closed}" ]; do sleep 0.1; done
+"""
+
+
+@pytest.mark.serial
+@shell_script_browser
+def test_serve_port_0_serves_while_browser_is_open(tmp_path):
+    opened, closed = tmp_path / "opened", tmp_path / "closed"
+    browser = tmp_path / "browser"
+    browser.write_text(WAITING_BROWSER.format(opened=opened, closed=closed), "utf-8")
+    browser.chmod(0o755)
+    try:
+        with serve_on_port_0("-o", env={**os.environ, "BROWSER": str(browser)}) as (
+            ds_proc,
+            port,
+        ):
+            response = httpx2.get(
+                f"http://127.0.0.1:{port}/-/versions.json", timeout=5.0
+            )
+            assert response.status_code == 200
+            deadline = time.time() + 5.0
+            while not opened.exists() and time.time() < deadline:
+                time.sleep(0.05)
+            assert opened.read_text("utf-8").startswith(f"http://127.0.0.1:{port}/")
+            ds_proc.terminate()
+            ds_proc.wait(timeout=3)
+    finally:
+        closed.touch()
+
+
+PRINTING_ASGI_WRAPPER_PLUGIN = """
+from datasette import hookimpl
+
+
+@hookimpl
+def asgi_wrapper(datasette):
+    print("asgi_wrapper called", flush=True)
+    return lambda app: app
+"""
+
+
+@pytest.mark.serial
+def test_serve_fixed_port_root_url_is_first_output_line(serve_with_plugins):
+    ds_proc, port = serve_with_plugins(
+        {"printing_asgi_wrapper_plugin": PRINTING_ASGI_WRAPPER_PLUGIN}, "--root"
+    )
+    first_line = ds_proc.stdout.readline().decode("utf-8")
+    assert first_line.startswith(f"http://127.0.0.1:{port}/-/auth-token?token=")
 
 
 # Shaped after datasette-litestream's startup hook, which schedules a
@@ -190,16 +311,41 @@ def shutdown(datasette):
 """
 
 
-def _start_serve_with_shutdown_sentinel(serve_with_plugins, tmp_path):
+def _start_serve_with_shutdown_sentinel(
+    serve_with_plugins, tmp_path, *extra_args, **kwargs
+):
     sentinel_path = tmp_path / "shutdown-sentinel.txt"
     proc, _ = serve_with_plugins(
         {
             "shutdown_sentinel_plugin": SHUTDOWN_SENTINEL_PLUGIN_TEMPLATE.format(
                 sentinel_path=str(sentinel_path)
             )
-        }
+        },
+        *extra_args,
+        **kwargs,
     )
     return proc, sentinel_path
+
+
+# Reserved for documentation by RFC 5737, so no machine has it to bind
+UNBINDABLE_HOST = "192.0.2.1"
+
+
+@pytest.mark.serial
+def test_serve_port_0_bind_failure_runs_shutdown_hooks(serve_with_plugins, tmp_path):
+    ds_proc, sentinel_path = _start_serve_with_shutdown_sentinel(
+        serve_with_plugins,
+        tmp_path,
+        "-h",
+        UNBINDABLE_HOST,
+        "-p",
+        "0",
+        wait_for_startup=False,
+    )
+    stdout, _ = ds_proc.communicate(timeout=15)
+    output = stdout.decode("utf-8")
+    assert ds_proc.returncode not in (0, None), output
+    assert sentinel_path.exists(), output
 
 
 @pytest.mark.serial
