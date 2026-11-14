@@ -730,19 +730,6 @@ def serve(
             raise click.ClickException(e.args[0])
 
         # Start the server
-        url = None
-        if root:
-            ds.root_enabled = True
-            url = "http://{}:{}{}?token={}".format(
-                host, port, ds.urls.path("-/auth-token"), ds._root_token
-            )
-            click.echo(url)
-        if open_browser:
-            if url is None:
-                # Figure out most convenient URL - to table, database or homepage
-                path = await initial_path_for_datasette(ds)
-                url = f"http://{host}:{port}{path}"
-            webbrowser.open(url)
         uvicorn_kwargs = {
             "host": host,
             "port": port,
@@ -756,8 +743,28 @@ def serve(
             uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
         if ssl_certfile:
             uvicorn_kwargs["ssl_certfile"] = ssl_certfile
-        server = uvicorn.Server(uvicorn.Config(ds.app(), **uvicorn_kwargs))
-        await server.serve()
+        config = uvicorn.Config(ds.app(), **uvicorn_kwargs)
+        sockets = None
+        listening_port = port
+        if port == 0 and not uds:
+            sock = config.bind_socket()
+            sock.listen(config.backlog)
+            sockets = [sock]
+            listening_port = sock.getsockname()[1]
+        url = None
+        if root:
+            ds.root_enabled = True
+            url = "http://{}:{}{}?token={}".format(
+                host, listening_port, ds.urls.path("-/auth-token"), ds._root_token
+            )
+            click.echo(url)
+        if open_browser:
+            if url is None:
+                # Figure out most convenient URL - to table, database or homepage
+                path = await initial_path_for_datasette(ds)
+                url = f"http://{host}:{listening_port}{path}"
+            webbrowser.open(url)
+        await uvicorn.Server(config).serve(sockets=sockets)
 
     asyncio.run(_serve_async())
 
