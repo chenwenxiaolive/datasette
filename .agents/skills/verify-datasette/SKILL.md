@@ -99,3 +99,11 @@ for p in /proc/[0-9]*; do [ "$(readlink $p/cwd 2>/dev/null)" = "$(pwd -P)" ] && 
 
 The log ends with `Finished server process [<pid>]`, and the loop prints nothing
 when no process is left running from the checkout. The environment stays.
+
+## Proven
+
+A fresh session followed this end to end on sh-gate at 4dd14cac (2026-11-14):
+environment, launch, check, all five features and cleanup, with the evidence
+left in place. Not covered: building the environment in a checkout that has
+none (its author did that once, at 6466eb6b), the test suite, and any node other
+than sh-gate.
