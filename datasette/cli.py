@@ -6,6 +6,7 @@ import pathlib
 import shutil
 import sys
 import textwrap
+import threading
 import webbrowser
 from runpy import run_module
 from subprocess import call
@@ -733,7 +734,11 @@ def serve(
         if root:
             ds.root_enabled = True
 
-        async def announce(listening_port):
+        def open_browser_in_background(url):
+            # webbrowser.open waits for a console browser, which needs the event loop to serve it
+            threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+
+        async def announce(listening_port, open_url):
             url = None
             if root:
                 url = "http://{}:{}{}?token={}".format(
@@ -745,13 +750,16 @@ def serve(
                     # Figure out most convenient URL - to table, database or homepage
                     path = await initial_path_for_datasette(ds)
                     url = f"http://{host}:{listening_port}{path}"
-                webbrowser.open(url)
+                open_url(url)
 
         class ServerAnnouncingItsPort(uvicorn.Server):
             async def startup(self, sockets=None):
                 await super().startup(sockets=sockets)
                 if self.started:
-                    await announce(self.servers[0].sockets[0].getsockname()[1])
+                    await announce(
+                        self.servers[0].sockets[0].getsockname()[1],
+                        open_browser_in_background,
+                    )
 
         uvicorn_kwargs = {
             "host": host,
@@ -766,11 +774,13 @@ def serve(
             uvicorn_kwargs["ssl_keyfile"] = ssl_keyfile
         if ssl_certfile:
             uvicorn_kwargs["ssl_certfile"] = ssl_certfile
+        announce_once_listening = port == 0 and not uds
+        if not announce_once_listening:
+            await announce(port, webbrowser.open)
         config = uvicorn.Config(ds.app(), **uvicorn_kwargs)
-        if port == 0 and not uds:
+        if announce_once_listening:
             await ServerAnnouncingItsPort(config).serve()
         else:
-            await announce(port)
             await uvicorn.Server(config).serve()
 
     asyncio.run(_serve_async())
