@@ -461,7 +461,7 @@ class Filters:
     def has_selections(self):
         return bool(self.pairs)
 
-    def build_where_clauses(self, table):
+    def build_where_clauses(self, table, untyped_columns=()):
         sql_bits = []
         params = {}
         i = 0
@@ -469,6 +469,13 @@ class Filters:
             filter = self._filters_by_key.get(lookup, None)
             if filter:
                 sql_bit, param = filter.where_clause(table, column, value, i)
+                if lookup == "exact" and column in untyped_columns:
+                    # No affinity turns the text parameter into a number here: https://www.sqlite.org/datatype3.html#column_affinity_for_views_and_subqueries
+                    c = _quote_sqlite_identifier(column)
+                    sql_bit = (
+                        f"({sql_bit} or (typeof({c}) in ('integer', 'real')"
+                        f" and cast({c} as numeric) = :p{i}))"
+                    )
                 sql_bits.append(sql_bit)
                 if param is not None:
                     if not isinstance(param, list):
