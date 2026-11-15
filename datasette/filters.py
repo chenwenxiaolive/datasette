@@ -225,6 +225,18 @@ def _coerce_numeric_filter_value(value):
         return converted if math.isfinite(converted) else value
 
 
+def _is_number_as_python_writes_it(value):
+    try:
+        return str(int(value)) == value
+    except ValueError:
+        pass
+    try:
+        number = float(value)
+    except ValueError:
+        return False
+    return math.isfinite(number) and str(number) == value
+
+
 class TemplatedFilter(Filter):
     def __init__(
         self,
@@ -461,7 +473,7 @@ class Filters:
     def has_selections(self):
         return bool(self.pairs)
 
-    def build_where_clauses(self, table, is_view=False):
+    def build_where_clauses(self, table, columns_without_affinity=()):
         sql_bits = []
         params = {}
         i = 0
@@ -469,11 +481,14 @@ class Filters:
             filter = self._filters_by_key.get(lookup, None)
             if filter:
                 sql_bit, param = filter.where_clause(table, column, value, i)
-                if lookup == "exact" and is_view:
-                    # A view's column can lack the affinity that turns the text parameter into a number: https://www.sqlite.org/datatype3.html#column_affinity_for_views_and_subqueries
+                if (
+                    lookup == "exact"
+                    and column in columns_without_affinity
+                    and _is_number_as_python_writes_it(value)
+                ):
+                    # No affinity turns the text parameter into a number here: https://www.sqlite.org/datatype3.html#column_affinity_for_views_and_subqueries
                     c = _quote_sqlite_identifier(column)
-                    number = f"cast(:p{i} as numeric)"
-                    sql_bit = f"({sql_bit} or (typeof({c}) in ('integer', 'real') and {c} = +{number} and {number} = :p{i}))"
+                    sql_bit = f"({sql_bit} or (typeof({c}) in ('integer', 'real') and {c} = +cast(:p{i} as numeric)))"
                 sql_bits.append(sql_bit)
                 if param is not None:
                     if not isinstance(param, list):
