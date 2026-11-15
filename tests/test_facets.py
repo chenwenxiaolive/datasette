@@ -1029,22 +1029,45 @@ async def test_facet_toggle_on_view_column_shows_its_rows():
             ] == [True]
     count = await ds.client.post("/view_columns/items_view/-/count?b=1")
     assert count.json() == {"ok": True, "count": 3}
+    other_case = await ds.client.get("/view_columns/items_view.json?B=1")
+    assert len(other_case.json()["rows"]) == 3
 
 
 @pytest.mark.asyncio
-async def test_exact_filter_on_view_column_keeps_text_values_and_typed_columns():
+async def test_exact_filter_on_view_column_shows_its_text_and_every_equal_number():
     ds = Datasette()
     db = ds.add_memory_database("view_filters")
     await db.execute_write_script("""
         create table places (id integer primary key, j text);
         insert into places (j) values
-            ('{"zip": "01234"}'), ('{"zip": 1234}'), ('{"zip": "1.0"}'), ('{"zip": 1}');
+            ('{"zip": "01234"}'), ('{"zip": 1234}'), ('{"zip": "1.0"}'),
+            ('{"zip": 1}'), ('{"zip": 1.0}');
         create view places_view as
             select id, json_extract(j, '$.zip') as zip from places;
         """)
     path = "/view_filters/places_view.json"
-    for text_zip, id in (("01234", 1), ("1.0", 3)):
-        rows = (await ds.client.get(f"{path}?zip={text_zip}")).json()["rows"]
-        assert [row["id"] for row in rows] == [id]
+    for value, ids in (("01234", [1]), ("1", [4, 5]), ("1.0", [3, 4, 5])):
+        rows = (await ds.client.get(f"{path}?zip={value}")).json()["rows"]
+        assert sorted(row["id"] for row in rows) == ids, value
     typed = (await ds.client.get(f"{path}?id=2&_extra=query")).json()
     assert 'where "id" = :p0 ' in typed["query"]["sql"]
+
+
+@pytest.mark.asyncio
+async def test_number_filter_on_left_join_view_column_searches_its_index():
+    ds = Datasette()
+    db = ds.add_memory_database("view_plans")
+    await db.execute_write_script("""
+        create table customers (id integer primary key, name text);
+        create table orders (id integer primary key, customer_id integer, tag);
+        create index orders_tag on orders (tag);
+        create view customer_tags as select customers.id, orders.tag
+            from customers left join orders on orders.customer_id = customers.id;
+        """)
+    query = (
+        await ds.client.get("/view_plans/customer_tags.json?tag=78&_extra=query")
+    ).json()["query"]
+    plan = await db.execute("explain query plan " + query["sql"], query["params"])
+    steps = [row[-1] for row in plan.rows]
+    assert any("orders_tag" in step for step in steps), steps
+    assert not any(step.startswith("SCAN") for step in steps), steps
