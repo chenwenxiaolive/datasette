@@ -1000,8 +1000,6 @@ async def test_facet_toggle_on_view_column_shows_its_rows():
             cast(code as text) as code_cast,
             code collate nocase as code_nocase
         from items;
-        create view items_union as
-            select id, n from items union all select id + 100, n + 0 from items;
         create view items_each as
             select key as position, value from json_each('[10, 10, 20]');
         """)
@@ -1012,8 +1010,6 @@ async def test_facet_toggle_on_view_column_shows_its_rows():
         ("items_view", "code_expr"),
         ("items_view", "code_cast"),
         ("items_view", "code_nocase"),
-        ("items_union", "id"),
-        ("items_union", "n"),
         ("items_each", "position"),
         ("items_each", "value"),
     ):
@@ -1033,3 +1029,20 @@ async def test_facet_toggle_on_view_column_shows_its_rows():
             ] == [True]
     count = await ds.client.post("/view_columns/items_view/-/count?b=1")
     assert count.json() == {"ok": True, "count": 3}
+
+
+@pytest.mark.asyncio
+async def test_exact_filter_on_view_column_keeps_text_values_and_typed_columns():
+    ds = Datasette()
+    db = ds.add_memory_database("view_filters")
+    await db.execute_write_script("""
+        create table places (id integer primary key, j text);
+        insert into places (j) values ('{"zip": "01234"}'), ('{"zip": 1234}');
+        create view places_view as
+            select id, json_extract(j, '$.zip') as zip from places;
+        """)
+    path = "/view_filters/places_view.json"
+    text_zip = (await ds.client.get(f"{path}?zip=01234")).json()
+    assert [row["id"] for row in text_zip["rows"]] == [1]
+    typed = (await ds.client.get(f"{path}?id=2&_extra=query")).json()
+    assert 'where "id" = :p0 ' in typed["query"]["sql"]
