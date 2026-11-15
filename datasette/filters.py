@@ -225,16 +225,17 @@ def _coerce_numeric_filter_value(value):
         return converted if math.isfinite(converted) else value
 
 
-def _is_number_as_python_writes_it(value):
+def _number_type_written_as(value):
     try:
-        return str(int(value)) == value
+        number = int(value)
     except ValueError:
-        pass
-    try:
-        number = float(value)
-    except ValueError:
-        return False
-    return math.isfinite(number) and str(number) == value
+        try:
+            number = float(value)
+        except ValueError:
+            return None
+        return "real" if math.isfinite(number) and str(number) == value else None
+    in_sqlite_range = -(2**63) <= number < 2**63
+    return "integer" if in_sqlite_range and str(number) == value else None
 
 
 class TemplatedFilter(Filter):
@@ -484,11 +485,11 @@ class Filters:
                 if (
                     lookup == "exact"
                     and column in columns_without_affinity
-                    and _is_number_as_python_writes_it(value)
+                    and (number_type := _number_type_written_as(value))
                 ):
                     # No affinity turns the text parameter into a number here: https://www.sqlite.org/datatype3.html#column_affinity_for_views_and_subqueries
                     c = _quote_sqlite_identifier(column)
-                    sql_bit = f"({sql_bit} or (typeof({c}) in ('integer', 'real') and {c} = +cast(:p{i} as numeric)))"
+                    sql_bit = f"({sql_bit} or (typeof({c}) = '{number_type}' and {c} = +cast(:p{i} as {number_type})))"
                 sql_bits.append(sql_bit)
                 if param is not None:
                     if not isinstance(param, list):
