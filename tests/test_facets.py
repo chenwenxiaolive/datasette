@@ -1037,12 +1037,14 @@ async def test_exact_filter_on_view_column_keeps_text_values_and_typed_columns()
     db = ds.add_memory_database("view_filters")
     await db.execute_write_script("""
         create table places (id integer primary key, j text);
-        insert into places (j) values ('{"zip": "01234"}'), ('{"zip": 1234}');
+        insert into places (j) values
+            ('{"zip": "01234"}'), ('{"zip": 1234}'), ('{"zip": "1.0"}'), ('{"zip": 1}');
         create view places_view as
             select id, json_extract(j, '$.zip') as zip from places;
         """)
     path = "/view_filters/places_view.json"
-    text_zip = (await ds.client.get(f"{path}?zip=01234")).json()
-    assert [row["id"] for row in text_zip["rows"]] == [1]
+    for text_zip, id in (("01234", 1), ("1.0", 3)):
+        rows = (await ds.client.get(f"{path}?zip={text_zip}")).json()["rows"]
+        assert [row["id"] for row in rows] == [id]
     typed = (await ds.client.get(f"{path}?id=2&_extra=query")).json()
     assert 'where "id" = :p0 ' in typed["query"]["sql"]
