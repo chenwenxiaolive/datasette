@@ -975,3 +975,99 @@ async def test_facet_only_considers_first_x_rows():
         assert data2["suggested_facets"] == []
     finally:
         Facet.suggest_consider = original_suggest_consider
+
+
+@pytest.mark.asyncio
+async def test_facet_toggle_on_view_column_shows_its_rows():
+    ds = Datasette()
+    db = ds.add_memory_database("view_columns")
+    await db.execute_write_script("""
+        create table items (
+            id integer primary key, n integer, r real, code text, j text
+        );
+        insert into items (n, r, code, j) values
+            (1, 1.5, '01', '{"b": true}'),
+            (1, 2.0, '1', '{"b": true}'),
+            (2, 2.0, '1.0', '{"b": false}'),
+            (2, 2.5, 'x', '{"b": false}'),
+            (3, 1.5, 'x', '{"b": true}');
+        create view items_view as select
+            id,
+            json_extract(j, '$.b') as b,
+            n + 0 as n_expr,
+            r * 1 as r_expr,
+            '' || code as code_expr,
+            cast(code as text) as code_cast,
+            code collate nocase as code_nocase
+        from items;
+        create view items_each as
+            select key as position, value from json_each('[10, 10, 20]');
+        """)
+    for view, column in (
+        ("items_view", "b"),
+        ("items_view", "n_expr"),
+        ("items_view", "r_expr"),
+        ("items_view", "code_expr"),
+        ("items_view", "code_cast"),
+        ("items_view", "code_nocase"),
+        ("items_each", "position"),
+        ("items_each", "value"),
+    ):
+        path = f"/view_columns/{view}"
+        facets = (
+            await ds.client.get(f"{path}.json?_facet={column}&_extra=facet_results")
+        ).json()["facet_results"]["results"][column]["results"]
+        assert len(facets) > 1
+        for facet in facets:
+            query = urlsplit(facet["toggle_url"]).query
+            toggled = (await ds.client.get(f"{path}.json?{query}")).json()
+            assert len(toggled["rows"]) == facet["count"], f"{view}?{query}"
+            assert {row[column] for row in toggled["rows"]} == {facet["value"]}
+            assert [
+                f["selected"]
+                for f in toggled["facet_results"]["results"][column]["results"]
+            ] == [True]
+    count = await ds.client.post("/view_columns/items_view/-/count?b=1")
+    assert count.json() == {"ok": True, "count": 3}
+    other_case = await ds.client.get("/view_columns/items_view.json?B=1")
+    assert len(other_case.json()["rows"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_exact_filter_on_view_column_shows_its_text_and_every_equal_number():
+    ds = Datasette()
+    db = ds.add_memory_database("view_filters")
+    await db.execute_write_script("""
+        create table places (id integer primary key, j text);
+        insert into places (j) values
+            ('{"zip": "01234"}'), ('{"zip": 1234}'), ('{"zip": "1.0"}'),
+            ('{"zip": 1}'), ('{"zip": 1.0}');
+        create view places_view as
+            select id, json_extract(j, '$.zip') as zip from places;
+        """)
+    path = "/view_filters/places_view.json"
+    for value, ids in (("01234", [1]), ("1", [4, 5]), ("1.0", [3, 4, 5])):
+        rows = (await ds.client.get(f"{path}?zip={value}")).json()["rows"]
+        assert sorted(row["id"] for row in rows) == ids, value
+    typed = (await ds.client.get(f"{path}?id=2&_extra=query")).json()
+    assert 'where "id" = :p0 ' in typed["query"]["sql"]
+
+
+@pytest.mark.asyncio
+async def test_number_filter_on_left_join_view_column_searches_its_index():
+    ds = Datasette()
+    db = ds.add_memory_database("view_plans")
+    await db.execute_write_script("""
+        create table customers (id integer primary key, name text);
+        create table orders (id integer primary key, customer_id integer, tag);
+        create index orders_tag on orders (tag);
+        create view customer_tags as select customers.id, orders.tag
+            from customers left join orders on orders.customer_id = customers.id;
+        """)
+    query = (
+        await ds.client.get("/view_plans/customer_tags.json?tag=78&_extra=query")
+    ).json()["query"]
+    plan = await db.execute("explain query plan " + query["sql"], query["params"])
+    steps = [row[-1] for row in plan.rows]
+    assert any("orders_tag" in step for step in steps), steps
+    assert not any(step.startswith("SCAN") for step in steps), steps

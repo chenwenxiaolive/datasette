@@ -189,3 +189,17 @@ async def test_count_base_url(tmp_path):
         assert response.json() == {"ok": True, "count": 2}
     finally:
         ds.close()
+
+
+@pytest.mark.asyncio
+async def test_count_on_view_sqlite_cannot_prepare():
+    ds = Datasette()
+    db = ds.add_memory_database("broken_view")
+    await db.execute_write_script("""
+        create table base (id integer primary key);
+        create view gone as select id from base;
+        drop table base;
+        """)
+    response = await ds.client.post("/broken_view/gone/-/count")
+    assert response.status_code == 400
+    assert response.json()["error"] == "no such table: main.base"

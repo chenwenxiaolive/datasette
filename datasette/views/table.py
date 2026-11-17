@@ -1575,8 +1575,18 @@ class TableCountView(BaseView):
         )
         if not visible:
             raise Forbidden("You do not have permission to view this table")
+        try:
+            columns_without_affinity = await _columns_without_affinity(
+                resolved.db, resolved.table, resolved.is_view
+            )
+        except sqlite3.OperationalError as ex:
+            return Response.error(str(ex), status=400)
         _, where_clauses, params, _, _ = await _table_filters(
-            self.ds, request, resolved.db.name, resolved.table
+            self.ds,
+            request,
+            resolved.db.name,
+            resolved.table,
+            columns_without_affinity,
         )
         _next = request.args.get("_next")
         if request.args.get("_count") == "before" and _next:
@@ -2326,7 +2336,19 @@ def _page_position(datasette, request, is_view, sort, sort_desc, pks, use_rowid)
     return position
 
 
-async def _table_filters(datasette, request, database_name, table_name):
+async def _columns_without_affinity(db, table_name, is_view):
+    if not is_view:
+        return set()
+    return {
+        column.name
+        for column in await db.table_column_details(table_name)
+        if column.type.upper() in ("", "BLOB")
+    }
+
+
+async def _table_filters(
+    datasette, request, database_name, table_name, columns_without_affinity
+):
     # Arguments that start with _ and don't contain a __ are
     # special - things like ?_search= - and should not be
     # treated as filters.
@@ -2338,7 +2360,9 @@ async def _table_filters(datasette, request, database_name, table_name):
 
     # Build where clauses from query string arguments
     filters = Filters(sorted(filter_args))
-    where_clauses, params = filters.build_where_clauses(table_name)
+    where_clauses, params = filters.build_where_clauses(
+        table_name, columns_without_affinity
+    )
 
     # Execute filters_from_request plugin hooks - including the default
     # ones that live in datasette/filters.py
@@ -2451,7 +2475,13 @@ async def table_view_data(
         params,
         extra_human_descriptions,
         extra_context_from_filters,
-    ) = await _table_filters(datasette, request, database_name, table_name)
+    ) = await _table_filters(
+        datasette,
+        request,
+        database_name,
+        table_name,
+        await _columns_without_affinity(db, table_name, is_view),
+    )
 
     # Deal with custom sort orders
     sortable_columns = await _sortable_columns_for_table(
